@@ -37,6 +37,13 @@ Scene g_scene;
 View* g_view = nullptr;
 View* g_base = nullptr;              // the view for the view target (g_view may be one of its Match=Camera views)
 CameraMatch g_match;
+bool g_pause_when_flying = true;     // PauseWhenFlying=: the pawn in MOVE_Flying counts as a scripted scene (read_scene)
+
+// The scene settings of a new Gyro4All.ini, after the probe's (Engine::default_settings).
+const char kSceneSettings[] =
+    "; A character flown by the game (CharacterMovement in MOVE_Flying) counts as a scripted scene: the gyro pauses, as\r\n"
+    ";     the stick does. 0 for a game whose player really flies (set in its profile; Daemon X Machina's does).\r\n"
+    ";PauseWhenFlying=1\r\n";
 
 FILETIME profile_stamp() {
     WIN32_FILE_ATTRIBUTE_DATA data{};
@@ -48,6 +55,8 @@ void load_profile() {
     probe_configure(has_views(settings::profile_path()));
     g_views = load_views(settings::profile_path());
     g_profile_time = profile_stamp();
+    g_pause_when_flying = settings::get(L"PauseWhenFlying", 1) != 0;
+    if (!g_pause_when_flying) log("scene: MOVE_Flying doesn't pause the gyro (PauseWhenFlying=0: the player flies in this game)");
 }
 
 // The profile file changed (edited by hand, or a view added by the probe): read its views again and use them at once.
@@ -120,12 +129,16 @@ Scene read_scene() {
     // - a reflected IsInActiveCutscene on the pawn (Dead Island 2's BP_Base_Player_C);
     // - the pawn's CharacterMovement in MOVE_Flying (5): games move the character along a scripted path with it (Dead
     //   Island 2's in-engine scenes, where the stick doesn't turn the camera; MovementMode is 1, walking, in play).
+    //   On by default, as a character that flies is a scene in most games; a game whose player really flies
+    //   (Daemon X Machina's Arsenal hovers in MOVE_Flying) turns it off in its profile with PauseWhenFlying=0.
     const bool cutscene = ue::read_bool(s.pawn, "IsInActiveCutscene", false);
-    const ue::Obj movement = ue::read_obj(s.pawn, "CharacterMovement");
-    const ue::Prop mode = ue::prop_of(movement, "MovementMode");
-    int32_t mode_value = 0;
-    const bool flying = mode && mode.element_size == 1 && ue::read_i32(movement + mode.offset, mode_value) &&
-                        (mode_value & 0xFF) == 5;
+    bool flying = false;
+    if (g_pause_when_flying) {
+        const ue::Obj movement = ue::read_obj(s.pawn, "CharacterMovement");
+        const ue::Prop mode = ue::prop_of(movement, "MovementMode");
+        int32_t mode_value = 0;
+        flying = mode && mode.element_size == 1 && ue::read_i32(movement + mode.offset, mode_value) && (mode_value & 0xFF) == 5;
+    }
     static int last_scripted = 0;  // 0 none, 1 cutscene, 2 flying
     const int scripted = cutscene ? 1 : flying ? 2 : 0;
     if (scripted != last_scripted && s.pawn) {
@@ -757,7 +770,10 @@ public:
     // UE only checks empty XInput slots again after WM_DEVICECHANGE (XInputInterface's bNeedsControllerStateUpdate).
     const wchar_t* window_class() const override { return L"UnrealWindow"; }
 
-    const char* default_settings() const override { return probe_default_settings(); }
+    const char* default_settings() const override {
+        static const std::string block = std::string(probe_default_settings()) + kSceneSettings;
+        return block.c_str();
+    }
 
     void configure() override { load_profile(); }
     void set_profile_conditions(const std::vector<ProfileCondition>& conditions) override { unreal::set_profile_conditions(conditions); }
