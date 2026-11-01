@@ -154,16 +154,46 @@ int32_t object_count() {
     return rd(g_obj_array + (g_obj_flat ? 0x0C : 0x14), n) ? n : 0;
 }
 
+// Objects per chunk of FChunkedFixedUObjectArray: 64 K in every engine version we know, except that some UE 4.20
+// builds (Daemon X Machina: 66560 = 65 K) use a bigger one. Measured once from the data rather than assumed: the first
+// item of chunk 1 holds the object whose InternalIndex is the chunk size (object_at() with the wrong size reads the
+// wrong object for every index past the first chunk: TWeakObjectPtr lookups, full-array scans).
+int32_t g_per_chunk = 65536;
+bool g_per_chunk_measured = false;  // chunk 1 existed and its first object told the size
+
+// Measures once chunk 1 exists (at start-up a game may still fit in chunk 0: Daemon X Machina has 65000 objects when
+// Gyro4All finds the array), so it's tried at init and again from object_at() for the first index past 64 K. Indices
+// below 64 K are in chunk 0 at the same place under either size, so nothing is misread before the measurement.
+void detect_chunk_size() {
+    if (g_obj_flat || g_per_chunk_measured) return;
+    int32_t num_chunks = 0;
+    const uintptr_t chunks = rdp(g_obj_array);
+    if (!chunks || !rd(g_obj_array + 0x1C, num_chunks) || num_chunks < 2) return;
+    const uintptr_t chunk1 = rdp(chunks + 8);
+    const Obj first = chunk1 ? rdp(chunk1 + g_item_object) : 0;
+    int32_t index = 0;
+    if (!first || !rd(first + kObjIndex, index) || index < 0x10000 || index > 0x20000) return;
+    // Also the object right after must continue the sequence, so a stale pointer isn't trusted.
+    const Obj second = rdp(chunk1 + g_item_stride + g_item_object);
+    int32_t next = 0;
+    if (!second || !rd(second + kObjIndex, next) || next != index + 1) return;
+    g_per_chunk = index;
+    g_per_chunk_measured = true;
+    log("ue: GUObjectArray holds %d objects per chunk%s", g_per_chunk,
+        g_per_chunk == 65536 ? "" : " (not the usual 64K: this build's FChunkedFixedUObjectArray is bigger)");
+}
+
 Obj object_at(int32_t i) {
     if (g_obj_flat) {
         const uintptr_t items = rdp(g_obj_array);
         return items ? rdp(items + uintptr_t(i) * g_item_stride + g_item_object) : 0;
     }
+    if (i >= 65536 && !g_per_chunk_measured) detect_chunk_size();
     const uintptr_t chunks = rdp(g_obj_array);
     if (!chunks) return 0;
-    const uintptr_t chunk = rdp(chunks + (i / 65536) * 8ull);
+    const uintptr_t chunk = rdp(chunks + (i / g_per_chunk) * 8ull);
     if (!chunk) return 0;
-    return rdp(chunk + uintptr_t(i % 65536) * g_item_stride + g_item_object);
+    return rdp(chunk + uintptr_t(i % g_per_chunk) * g_item_stride + g_item_object);
 }
 
 // FUObjectItems at `items`: items 1..16 are live UObjects whose InternalIndex matches. Returns the item stride
@@ -189,9 +219,10 @@ int item_stride(uintptr_t items, int* object_out) {
     return -1;
 }
 
-// MaxChunks for a MaxElements: engines differ in how PreAllocate derives it. UE 4.25+ rounds MaxElements up to whole
-// chunks (MaxChunks == ceil); UE 4.20 (Daemon X Machina: MaxElements 2129920 = 32.5 chunks, MaxChunks 32) truncates;
-// other builds use InMaxElements / chunk + 1 without rounding MaxElements. Accept floor .. ceil + 1.
+// MaxChunks for a MaxElements: ceil(MaxElements / 65536) when the chunk holds 64 K objects, but some builds use a
+// bigger chunk (UE 4.20 Daemon X Machina: 66560 objects, so MaxElements 2129920 gives MaxChunks 32, not 33). The
+// scan doesn't know the chunk size yet (detect_chunk_size measures it once the array is found), so accept
+// floor .. ceil + 1; the item checks that follow reject anything that isn't an object array anyway.
 bool max_chunks_plausible(int32_t max, int32_t max_chunks) {
     const int32_t floor_chunks = max / 65536, ceil_chunks = (max + 65535) / 65536;
     return max_chunks >= floor_chunks && max_chunks <= ceil_chunks + 1;
@@ -712,10 +743,12 @@ bool init() {
             found = find_object_array(writable_sections(true), diagnose);
             if (!found && diagnose) log("ue: GUObjectArray not found yet (retrying every 10 s)");
         }
-        if (found)
+        if (found) {
             log("ue: GUObjectArray.ObjObjects at %s (%s, item stride 0x%X, object at +0x%X, %d objects)",
                 module_offset(g_obj_array).c_str(), g_obj_flat ? "flat, UE 4.19 or older" : "chunked", g_item_stride,
                 g_item_object, object_count());
+            detect_chunk_size();  // logs the size when chunk 1 already exists; otherwise measured on first use
+        }
     }
     if (!g_name_blocks && find_name_pool(sections))
         log("ue: FNamePool.Blocks at %s (header len %s)", module_offset(g_name_blocks).c_str(),
@@ -833,9 +866,76 @@ Prop find_prop(Obj cls, const char* name) {
 
 Prop prop_of(Obj o, const char* name) { return find_prop(class_of(o), name); }
 
+// A TWeakObjectPtr (FWeakObjectPtr: ObjectIndex, ObjectSerialNumber): the object at that index of GUObjectArray, if it
+// still is the one the pointer meant (its InternalIndex matches; the serial isn't compared since FUObjectItem's layout
+// varies by version, and a recycled slot already fails the index check in practice or carries another class).
+Obj weak_object(uintptr_t address) {
+    int32_t index = -1, serial = 0;
+    if (!rd(address, index) || !rd(address + 4, serial) || index < 0 || index >= object_count()) return 0;
+    const Obj o = object_at(index);
+    int32_t internal = -1;
+    return o && rd(o + kObjIndex, internal) && internal == index ? o : 0;
+}
+
 Obj read_obj(Obj o, const char* name) {
     const Prop p = prop_of(o, name);
-    return p ? rdp(o + p.offset) : 0;
+    if (!p) return 0;
+    if (p.type == "WeakObjectProperty" || p.type == "LazyObjectProperty") return weak_object(o + p.offset);
+    return rdp(o + p.offset);
+}
+
+bool read_number(Obj o, const char* name, double& out) {
+    const Prop p = prop_of(o, name);
+    if (!p) return false;
+    const uintptr_t a = o + p.offset;
+    if (p.type == "FloatProperty") {
+        float v;
+        if (!rd(a, v)) return false;
+        out = v;
+        return true;
+    }
+    if (p.type == "DoubleProperty") return rd(a, out);
+    if (p.type == "IntProperty") {
+        int32_t v;
+        if (!rd(a, v)) return false;
+        out = v;
+        return true;
+    }
+    if (p.type == "UInt32Property") {
+        uint32_t v;
+        if (!rd(a, v)) return false;
+        out = v;
+        return true;
+    }
+    if (p.type == "Int64Property") {
+        int64_t v;
+        if (!rd(a, v)) return false;
+        out = double(v);
+        return true;
+    }
+    if (p.type == "ByteProperty" || p.type == "EnumProperty" || p.type == "Int8Property") {
+        uint8_t v;
+        if (!rd(a, v)) return false;
+        out = p.type == "Int8Property" ? double(int8_t(v)) : double(v);
+        return true;
+    }
+    if (p.type == "Int16Property" || p.type == "UInt16Property") {
+        uint16_t v;
+        if (!rd(a, v)) return false;
+        out = p.type == "Int16Property" ? double(int16_t(v)) : double(v);
+        return true;
+    }
+    if (p.type == "BoolProperty") {
+        uint8_t info[4] = {}, byte = 0;  // FieldSize, ByteOffset, ByteMask, FieldMask
+        if (!guarded_copy(info, p.field + g_prop_size, 4) || !rd(a + info[1], byte)) return false;
+        out = (byte & info[3]) != 0 ? 1 : 0;
+        return true;
+    }
+    if (p.type == "ObjectProperty" || p.type == "WeakObjectProperty") {  // set / unset
+        out = read_obj(o, name) ? 1 : 0;
+        return true;
+    }
+    return false;
 }
 
 bool read_bool(Obj o, const char* name, bool fallback) {

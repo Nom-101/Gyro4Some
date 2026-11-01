@@ -48,10 +48,20 @@ struct EngineFrame {
     // Current and unzoomed reference FOV for GyroLib's zoom compensation. Both vertical degrees, same projection.
     // Empty or invalid values bypass compensation for this update; the engine converts any horizontal FOV itself.
     std::optional<ZoomFov> zoom_fov;
+    // Sensitivity profiles driven by the game's state (Engine::set_profile_conditions): bit i set = the condition of
+    // the profile with view id kSensitivityViewIds[i] holds this frame. An engine that reads no conditions leaves it 0.
+    uint32_t profile_states = 0;
 };
 
 // View ids of the core's sensitivity profiles (ADS, ALT_ADS, OTHER): an engine must not give them to its own views.
 inline constexpr uint32_t kSensitivityViewIds[] = {1001, 1002, 1003};
+inline int sensitivity_view_index(uint32_t view_id) {
+    for (int i = 0; i < 3; ++i)
+        if (kSensitivityViewIds[i] == view_id) return i;
+    return -1;
+}
+
+struct ProfileCondition;
 
 class Engine {
 public:
@@ -77,6 +87,10 @@ public:
     virtual const char* default_settings() const { return ""; }
     // DllMain, after settings::configure and settings::ensure_file: read the profile.
     virtual void configure() = 0;
+    // DllMain, after configure: the sensitivity profiles whose <Key>ProfileMode=Game names a property of the game
+    // (profile_condition.hpp). The engine reads each one every frame and reports EngineFrame::profile_states; one it
+    // can't read (unknown path, or the engine doesn't support conditions) stays off, logged once. Default: none read.
+    virtual void set_profile_conditions(const std::vector<ProfileCondition>& /*conditions*/) {}
     // The gameplay views (at least the default one, id 1), registered with GyroLib on the first frame.
     virtual std::vector<ViewInfo> views() const = 0;
     // DllMain: true when the engine calls frame() itself, once per frame and always on the same thread, instead of the

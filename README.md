@@ -113,21 +113,24 @@ changed.
   automatically. GyroLib features that need hooks Gyro4All doesn't have yet: see [Current scope](#current-scope).
 - **Sensitivity profiles (ADS, ALT_ADS, OTHER).** Besides **Exploration** (the default, always on), the panel has
   an **ADS**, an **ALT_ADS** (for games with a second aim, e.g. a scope) and an **OTHER** tab. They are **off until
-  you give them a button and a mode** in `Gyro4All\Gyro4All.ini`: until then their tab reads e.g. "ADS - disabled" and
-  its description says which keys to set. An enabled profile starts with the Exploration settings
-  (ALT_ADS with the ADS settings), so nothing changes until you edit its tab, and replaces them while its button is
-  held, or from one press to the next. A game's profile can override these settings; restart the game after a
-  change. They only apply to the main camera, not to other camera views such as a car.
+  you give them a mode**, with a button or a game condition, in `Gyro4All\Gyro4All.ini` (or the game's profile): until
+  then their tab reads e.g. "ADS - disabled" and its description says which keys to set. An enabled profile starts with
+  the Exploration settings (ALT_ADS with the ADS settings), so nothing changes until you edit its tab, and replaces them
+  while its button is held, from one press to the next, or while the game's own state says so (e.g. Daemon X Machina's
+  sniper scope). A game's profile can override these settings; restart the game after a change. They only apply to the
+  main camera, not to other camera views such as a car.
 
   | Profile setting | Meaning |
   |---|---|
-  | `AdsProfileButton=` | Button for the ADS profile: `LT RT LB RB LS RS A B X Y` (or `L2 R2 L1 R1 L3 R3 Cross Circle Square Triangle`), `Back Start Up Down Left Right Touchpad Misc`, paddles `LP1 LP2 RP1 RP2`. Empty = disabled. |
-  | `AdsProfileMode=` | `Hold`: active while the button is held. `Toggle`: one press on, the next off; it also turns off on pause, menus and cutscenes, since Gyro4All can't see whether the game is still aiming. Empty = disabled. |
-  | `AltAdsProfileButton=`, `AltAdsProfileMode=` | Same for the ALT_ADS profile. |
-  | `OtherProfileButton=`, `OtherProfileMode=` | Same for the OTHER profile. |
+  | `AdsProfileButton=` | Button for the ADS profile: `LT RT LB RB LS RS A B X Y` (or `L2 R2 L1 R1 L3 R3 Cross Circle Square Triangle`), `Back Start Up Down Left Right Touchpad Misc`, paddles `LP1 LP2 RP1 RP2`. Empty = disabled (unless `Mode=Game`). |
+  | `AdsProfileMode=` | `Hold`: active while the button is held. `Toggle`: one press on, the next off; it also turns off on pause, menus and cutscenes, since Gyro4All can't see whether the game is still aiming. `Game`: active while `AdsProfileCondition=` holds, read from the game each frame (no button; never out of step with the game). Empty = disabled. |
+  | `AdsProfileCondition=` | With `Mode=Game`: a property path, true / non-zero by itself (`Pawn.ArsenalMovement.SniperModeEnabled`) or compared (`CameraManager.DefaultFOV < 60`; operators `== != < <= > >=`, value a number, `true` or `false`). In Unreal games the path starts at `Pawn`, `Controller` or `CameraManager`; see [Advanced](docs/ADVANCED.md#sensitivity-profiles-driven-by-the-game-keyprofilemodegame) for how to find one. Usually set in the game's profile. |
+  | `AltAdsProfileButton=`, `AltAdsProfileMode=`, `AltAdsProfileCondition=` | Same for the ALT_ADS profile. |
+  | `OtherProfileButton=`, `OtherProfileMode=`, `OtherProfileCondition=` | Same for the OTHER profile. |
   | `AdsProfileLabel=`, `AltAdsProfileLabel=`, `OtherProfileLabel=` | Optional name for the tab in the panel (e.g. `Sniper`). Empty = ADS / ALT_ADS / OTHER. |
 
-  Example: `AdsProfileButton=LT` and `AdsProfileMode=Hold`.
+  Examples: `AdsProfileButton=LT` and `AdsProfileMode=Hold`; or `AdsProfileMode=Game` and
+  `AdsProfileCondition=Pawn.ArsenalMovement.SniperModeEnabled` (Daemon X Machina's shipped profile).
 
   When two profiles are active, the one activated last wins. The button still does its normal action in the game.
 - **First time: calibrate.** Leave the controller still on a table for a few seconds while in a menu or the pause

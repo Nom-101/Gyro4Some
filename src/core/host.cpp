@@ -14,6 +14,7 @@
 #include "notify.hpp"
 #include "overlay.hpp"
 #include "perf.hpp"
+#include "profile_condition.hpp"
 #include "sensor_pacer.hpp"
 #include "settings.hpp"
 #include "util.hpp"
@@ -101,23 +102,28 @@ void GL_CALL on_recenter_step(void*, double fraction) {
 }
 
 // Sensitivity profiles (ADS, ALT_ADS, OTHER): extra GyroLib views (tabs in the panel, inheriting the default view's
-// settings) that replace the default view's settings while their button is held (Hold) or after it is pressed (Toggle).
-// Only in the default view (id 1): other camera views (vehicles) keep their own tab. The engine still turns the default
-// view. A Toggle profile turns off when gameplay is interrupted (no default view, pause, cursor, panel, focus), since
-// Gyro4All can't read the game's own aim state. All are off by default: a profile needs both its button and its mode in
-// Gyro4All.ini; until then its tab is labelled "<label> - disabled" and says how to enable it.
+// settings) that replace the default view's settings while their button is held (Hold), after it is pressed (Toggle),
+// or while a property of the game says so (Game: <key>ProfileCondition=, read by the engine each frame; the only mode
+// that follows the game's own aim state). Only in the default view (id 1): other camera views (vehicles) keep their own
+// tab. The engine still turns the default view. A Toggle profile turns off when gameplay is interrupted (no default
+// view, pause, cursor, panel, focus), since Gyro4All can't read the game's own aim state. All are off by default: a
+// profile needs its mode and its button (Hold, Toggle) or condition (Game) in Gyro4All.ini; until then its tab is
+// labelled "<label> - disabled" and says how to enable it.
 struct Profile {
     uint32_t id = 0;
-    const char* key;  // Gyro4All.ini prefix: <key>ProfileButton, <key>ProfileMode, <key>ProfileLabel
+    const char* key;  // Gyro4All.ini prefix: <key>ProfileButton, <key>ProfileMode, <key>ProfileLabel, <key>ProfileCondition
     const char* label;
     uint32_t parent;  // settings inheritance (ALT_ADS from ADS)
-    int button = -1;  // SDL_GamepadButton, or kLeftTrigger / kRightTrigger; -1 = disabled
+    int button = -1;  // SDL_GamepadButton, or kLeftTrigger / kRightTrigger; -1 = disabled (unless game)
     std::string button_name;
     std::string display;      // tab name: <key>ProfileLabel= (e.g. "Sniper"), else label
+    bool game = false;        // Mode=Game: on while `condition` holds (EngineFrame::profile_states), no button
+    ProfileCondition condition;
     bool registered = false;  // has its tab in the panel
     bool toggle = false;
     bool down = false, on = false;
     uint64_t since = 0;  // activation order: the latest active profile wins
+    bool enabled() const { return game || button >= 0; }
 };
 constexpr int kLeftTrigger = 100, kRightTrigger = 101;
 // ALT_ADS: a second aim (e.g. a scope or an alternative weapon mode) in games that have two.
@@ -154,23 +160,41 @@ int parse_button(std::string name) {
 }
 
 void load_sensitivity_profiles() {
+    std::vector<ProfileCondition> conditions;
     for (Profile& p : g_profiles) {
         const std::wstring key(p.key, p.key + std::strlen(p.key));
         const std::string button = settings::get_string((key + L"ProfileButton").c_str());
         std::string mode = settings::get_string((key + L"ProfileMode").c_str());
         std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-        const bool mode_ok = mode == "hold" || mode == "toggle";
-        p.button = mode_ok ? parse_button(button) : -1;
+        const bool mode_ok = mode == "hold" || mode == "toggle" || mode == "game";
+        p.game = false;
+        p.button = (mode == "hold" || mode == "toggle") ? parse_button(button) : -1;
         p.button_name = button;
         p.toggle = mode == "toggle";
         p.display = settings::get_string((key + L"ProfileLabel").c_str());
         if (p.display.empty()) p.display = p.label;
         if (!button.empty() && parse_button(button) < 0)
             log("settings: %sProfileButton=%s not recognised", p.key, button.c_str());
-        if (!mode.empty() && !mode_ok) log("settings: %sProfileMode=%s not recognised (Hold or Toggle)", p.key, mode.c_str());
-        if (p.button < 0) log("settings: profile '%s' (view %u) disabled: needs %sProfileButton= and %sProfileMode=", p.label, p.id, p.key, p.key);
-        else log("settings: profile '%s' (view %u) button=%s mode=%s tab='%s'", p.label, p.id, button.c_str(), p.toggle ? "Toggle" : "Hold", p.display.c_str());
+        if (!mode.empty() && !mode_ok) log("settings: %sProfileMode=%s not recognised (Hold, Toggle or Game)", p.key, mode.c_str());
+        if (mode == "game") {
+            const std::string text = settings::get_string((key + L"ProfileCondition").c_str());
+            std::string error;
+            if (parse_profile_condition(text, p.condition, &error)) {
+                p.game = true;
+                p.condition.view_id = p.id;
+                conditions.push_back(p.condition);
+            } else {
+                log("settings: %sProfileCondition=%s not usable (%s): profile '%s' disabled", p.key, text.c_str(), error.c_str(), p.label);
+            }
+        }
+        if (p.game)
+            log("settings: profile '%s' (view %u) mode=Game condition='%s' tab='%s'", p.label, p.id, p.condition.describe().c_str(), p.display.c_str());
+        else if (p.button < 0)
+            log("settings: profile '%s' (view %u) disabled: needs %sProfileMode= (Hold or Toggle with %sProfileButton=, or Game with %sProfileCondition=)", p.label, p.id, p.key, p.key, p.key);
+        else
+            log("settings: profile '%s' (view %u) button=%s mode=%s tab='%s'", p.label, p.id, button.c_str(), p.toggle ? "Toggle" : "Hold", p.display.c_str());
     }
+    if (!conditions.empty()) g_engine->set_profile_conditions(conditions);
 }
 
 // Every profile gets its tab, so the player sees it exists; a disabled one says how to enable it.
@@ -179,12 +203,14 @@ void register_sensitivity_profiles(gl_context* ctx, const std::vector<ViewInfo>&
         if (std::any_of(views.begin(), views.end(), [&](const ViewInfo& v) { return v.id == p.id; })) {
             log("profile: view Id=%u is reserved for the '%s' sensitivity profile, profile off", p.id, p.label);
             p.button = -1;
+            p.game = false;
             continue;
         }
-        const std::string label = p.button < 0 ? std::string(p.label) + " - disabled" : p.display;
+        const std::string label = !p.enabled() ? std::string(p.label) + " - disabled" : p.display;
         const std::string description =
-            p.button < 0 ? std::format("Disabled. To use it, set {0}ProfileButton= (e.g. LT) and {0}ProfileMode= (Hold or "
-                                       "Toggle) in Gyro4All\\Gyro4All.ini, then restart the game.", p.key)
+            !p.enabled() ? std::format("Disabled. To use it, set {0}ProfileMode= (Hold or Toggle, with {0}ProfileButton= e.g. LT; "
+                                       "or Game, with {0}ProfileCondition=) in Gyro4All\\Gyro4All.ini, then restart the game.", p.key)
+            : p.game     ? std::format("These settings are used while the game says {}.", p.condition.describe())
             : p.toggle   ? std::format("Pressing {} turns these settings on, pressing it again turns them off.", p.button_name)
                          : std::format("These settings are used while {} is held.", p.button_name);
         g_gyro->register_view(p.id, label.c_str(), GL_OUTPUT_CAMERA, 0, description.c_str());
@@ -201,11 +227,19 @@ bool profile_button_down(SDL_Gamepad* pad, int button) {
     return SDL_GetGamepadButton(pad, SDL_GamepadButton(button));
 }
 
-// Updates the profiles from the selected controller after gl_update: the result is reported on the next frame.
-// gameplay = the default view may turn the camera now.
-void update_sensitivity_profiles(SDL_Gamepad* pad, bool gameplay) {
+// Updates the profiles from the selected controller (and, for Mode=Game, the engine's EngineFrame::profile_states)
+// after gl_update: the result is reported on the next frame. gameplay = the default view may turn the camera now.
+void update_sensitivity_profiles(SDL_Gamepad* pad, bool gameplay, uint32_t profile_states) {
     static uint64_t order = 0;
     for (Profile& p : g_profiles) {
+        if (p.game) {
+            const int bit = sensitivity_view_index(p.id);
+            const bool on = gameplay && bit >= 0 && (profile_states & (1u << bit)) != 0;
+            if (on && !p.on) p.since = ++order;
+            p.on = on;
+            p.down = false;
+            continue;
+        }
         const bool down = gameplay && pad && p.button >= 0 && profile_button_down(pad, p.button);
         const bool pressed = down && !p.down;
         p.down = down;
@@ -789,7 +823,7 @@ void frame() {
     SDL_Gamepad* pad = xinput::selected_gamepad(g_gyro->get(), g_input->get(), out);
     overlay::draw(pad);  // D3D11/D3D10/D3D9 games: GyroLib's static panel, built after gl_update
     const bool neutral = panel_has_pad(g_gyro->get(), pad);
-    update_sensitivity_profiles(pad, default_view && host.camera_allowed && host.focused && !f.paused && !neutral);
+    update_sensitivity_profiles(pad, default_view && host.camera_allowed && host.focused && !f.paused && !neutral, f.profile_states);
     xinput::set_neutral(neutral);
     nativepad::set_neutral(neutral);
     dinputpad::frame(neutral, pad);
