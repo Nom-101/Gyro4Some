@@ -6365,3 +6365,33 @@ or gyro to stick.
   fixed ADS / ALT_ADS / OTHER tab name once the profile is enabled; the disabled tab keeps `<label> - disabled` so the
   hint still names the INI keys. The INI template and README document the key. Logs are unchanged except the
   `tab='...'` suffix on the enabled line.
+- 2026-11-01 **Daemon X Machina: 66560 objects per chunk, not truncation** (corrects the entry above): chunk 1's
+  first object has `InternalIndex` 66560 and 2129920 / 66560 = 32 = `MaxChunks` exactly, so this build's
+  `FChunkedFixedUObjectArray` has 65 × 1024 objects per chunk and `ue.cpp`'s hard-coded 65536 misread every index past
+  64 K (weak pointers, `object_at`). `max_chunks_plausible()` keeps its floor..ceil+1 test (same numbers, right reason;
+  comment rewritten). New `detect_chunk_size()` reads chunk 1's first and second `InternalIndex` (0x10000..0x20000 and
+  consecutive) and sets `g_per_chunk`; at init the game has only 65000 objects (no chunk 1 yet), so it is also tried
+  from `object_at()` on the first index past 64 K (indices below are in chunk 0 under either size). Logged as
+  `ue: GUObjectArray holds 66560 objects per chunk (not the usual 64K ...)`.
+- 2026-11-01 **`<Name>ProfileMode=Game` + `<Name>ProfileCondition=`: a sensitivity profile switched by the game's own
+  state** (built, 758 checks pass; user-tested on Daemon X Machina): an `LS` Toggle for the sniper tab also fired on the
+  stick click of other weapons and couldn't follow the scope. Core: `profile_condition.hpp` (`ProfileCondition`
+  {view_id, path, op, value}, `parse_profile_condition()`: bare path = non-zero, `== != < <= > >=` with a number /
+  true / false, path chars `[A-Za-z0-9_.]`), `Engine::set_profile_conditions()` (default no-op),
+  `EngineFrame::profile_states` (bit per `kSensitivityViewIds` index); `host.cpp` parses `Mode=Game` and the
+  condition and drives Game profiles from the bits (`on = gameplay && bit`), Hold/Toggle unchanged. Unreal:
+  `set_profile_conditions` maps roots `Pawn` / `Controller`,`PC` / `CameraManager`,`Camera` / `ViewTarget` and reuses
+  `resolve_path`; `profile_states()` reads the leaf each frame with new `ue::read_number` (Bool incl. bitmask,
+  Byte/Enum, Int8..Int64/UInt, Float/Double, Object/WeakObject = set), logs the first resolve with class / type / offset,
+  each change and, once per root class, a path that can't be read (stays off). `read_obj` now follows
+  `WeakObjectProperty` / `LazyObjectProperty` through new `weak_object()` (index → `object_at`, `InternalIndex`
+  verified; serial not compared). DXM (from the shipped `.pdb` + a read-only live watch): `ATTLCharacterCommon
+  ::ArsenalMovement` is a `TWeakObjectPtr` @+0xEE4 to `UTTLArsenalMovementComponent` (0x25C8), whose
+  `SniperModeEnabled` (bool @+0xF8, reflected) flips 0→1→0 exactly with the scope and stays 0 on L3 with other weapons;
+  `SniperCameraFieldOfViewRate` @+0x140 goes 1 → 2 on scope, up to 6 at full zoom (`InitialCameraFieldOfViewValue`
+  @+0x148 = 90), so zoom compensation in the tab covers the scope's own zoom. `ACharacter::CharacterMovement` (+0x390)
+  is a different component. Shipped `profiles/DXM-Win64-Shipping.ini`: `AdsProfileMode=Game`,
+  `AdsProfileCondition=Pawn.ArsenalMovement.SniperModeEnabled`, `AdsProfileLabel=Sniper`. In game: `resolved:
+  ArsenalMovement_C.SniperModeEnabled (BoolProperty @0xF8) = 0`, then `now holds` / `now doesn't hold` in step with the
+  scope; the user confirms the Sniper sensitivity applies only while scoped. Tests: parser (bare path, every operator,
+  true/false, 14 bad inputs). Docs: README profile table, ADVANCED section + log lines, GAMES / compatibility rows.

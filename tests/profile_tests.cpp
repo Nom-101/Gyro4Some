@@ -1,9 +1,11 @@
 // Unit tests for the parts of Gyro4All that need no game: the Unreal module's game profile (ue_profile.cpp), the
 // core's Match=Camera choice (camera_match.hpp), FOV conversion (fov.hpp), stick fallback (stick_fallback.cpp,
-// stick_response.cpp), stick camera (stick_camera.cpp) and sensor-time pacing (sensor_pacer.cpp). Built with Gyro4All
-// (target gyro4all_tests); run with tools/test-gyro4all.sh.
+// stick_response.cpp), stick camera (stick_camera.cpp), sensor-time pacing (sensor_pacer.cpp) and the
+// <Key>ProfileCondition= parser (profile_condition.hpp). Built with Gyro4All (target gyro4all_tests); run with
+// tools/test-gyro4all.sh.
 #include "camera_match.hpp"
 #include "fov.hpp"
+#include "profile_condition.hpp"
 #include "sensor_pacer.hpp"
 #include "stick_camera.hpp"
 #include "stick_fallback.hpp"
@@ -1311,6 +1313,75 @@ void test_pacer_fixed_delay() {
     CHECK(r.worst(200, 10'000'000) < 0.05);
 }
 
+// ---- <Key>ProfileCondition= (profile_condition.hpp) ----
+
+// A bare path means "true / non-zero"; spaces around it are allowed, inside it not.
+void test_condition_bare_path() {
+    ProfileCondition c;
+    std::string error;
+    CHECK(parse_profile_condition("Pawn.ArsenalMovement.SniperModeEnabled", c, &error));
+    CHECK(c.path == "Pawn.ArsenalMovement.SniperModeEnabled");
+    CHECK(c.op == ProfileCondition::Op::NonZero);
+    CHECK(c.holds(1) && c.holds(-2.5) && !c.holds(0));
+    CHECK(c.describe() == "Pawn.ArsenalMovement.SniperModeEnabled");
+    CHECK(parse_profile_condition("  Pawn.bIsAiming \t", c));
+    CHECK(c.path == "Pawn.bIsAiming");
+    CHECK(parse_profile_condition("Pawn.Weapon_01.Zoom2", c));
+    CHECK(c.path == "Pawn.Weapon_01.Zoom2");
+}
+
+// Every operator, with and without spaces, numbers in the usual spellings and true/false.
+void test_condition_operators() {
+    ProfileCondition c;
+    CHECK(parse_profile_condition("Pawn.Stance == 2", c));
+    CHECK(c.op == ProfileCondition::Op::Eq && c.value == 2);
+    CHECK(c.holds(2) && !c.holds(1) && !c.holds(3));
+    CHECK(c.describe() == "Pawn.Stance == 2");
+    CHECK(parse_profile_condition("Pawn.Stance!=0", c));
+    CHECK(c.op == ProfileCondition::Op::Ne && c.value == 0);
+    CHECK(c.holds(1) && !c.holds(0));
+    CHECK(parse_profile_condition("CameraManager.DefaultFOV < 60", c));
+    CHECK(c.op == ProfileCondition::Op::Lt && c.value == 60);
+    CHECK(c.holds(59.9) && !c.holds(60) && !c.holds(61));
+    CHECK(parse_profile_condition("CameraManager.DefaultFOV <= 60", c));
+    CHECK(c.op == ProfileCondition::Op::Le);
+    CHECK(c.holds(60) && !c.holds(60.1));
+    CHECK(parse_profile_condition("Pawn.Zoom > 1.5", c));
+    CHECK(c.op == ProfileCondition::Op::Gt && std::abs(c.value - 1.5) < 1e-12);
+    CHECK(c.holds(1.51) && !c.holds(1.5));
+    CHECK(c.describe() == "Pawn.Zoom > 1.5");
+    CHECK(parse_profile_condition("Pawn.Zoom >= -1e2", c));
+    CHECK(c.op == ProfileCondition::Op::Ge && c.value == -100);
+    CHECK(c.holds(-100) && !c.holds(-100.5));
+    CHECK(parse_profile_condition("Pawn.bAiming == true", c));
+    CHECK(c.op == ProfileCondition::Op::Eq && c.value == 1);
+    CHECK(parse_profile_condition("Pawn.bAiming == FALSE", c));
+    CHECK(c.op == ProfileCondition::Op::Eq && c.value == 0);
+    CHECK(c.holds(0) && !c.holds(1));
+}
+
+// Bad input is refused with a reason, and the comparison that fails leaves no half-parsed state the caller would use.
+void test_condition_bad_input() {
+    ProfileCondition c;
+    std::string error;
+    CHECK(!parse_profile_condition("", c, &error) && error == "empty");
+    CHECK(!parse_profile_condition("   ", c, &error) && error == "empty");
+    CHECK(!parse_profile_condition("== 1", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn.Stance ==", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn.Stance == two", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn.Stance == 1 2", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn.Stance == inf", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn Stance", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn->Stance", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition("Pawn.Stance[0]", c, &error) && !error.empty());
+    CHECK(!parse_profile_condition(".Pawn.Stance", c, &error) && error == "malformed property path");
+    CHECK(!parse_profile_condition("Pawn.Stance.", c, &error) && error == "malformed property path");
+    CHECK(!parse_profile_condition("Pawn..Stance", c, &error) && error == "malformed property path");
+    CHECK(!parse_profile_condition("Pawn.Stance = 1", c, &error) && !error.empty());  // single '=' isn't an operator
+    // A failed parse must not throw; the error pointer may be absent.
+    CHECK(!parse_profile_condition("Pawn.Stance == ", c));
+}
+
 int main() {
     test_rewritten_helper();
     test_match_single_member();
@@ -1380,6 +1451,9 @@ int main() {
     test_pacer_burst_passthrough_and_off();
     test_pacer_stall_at_once();
     test_pacer_fixed_delay();
+    test_condition_bare_path();
+    test_condition_operators();
+    test_condition_bad_input();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

@@ -5,6 +5,7 @@
 #include "host.hpp"
 #include "log.hpp"
 #include "notify.hpp"
+#include "profile_condition.hpp"
 #include "settings.hpp"
 #include "ue_probe.hpp"
 #include "ue_update_rotation.hpp"
@@ -563,6 +564,97 @@ std::string status_scene(const Scene& s, const View* view) {
                        ue::name_of(ue::class_of(s.view_target)), int(s.paused), int(s.cursor));
 }
 
+// Sensitivity profiles driven by the game (<Key>ProfileMode=Game): each condition names a scalar property by path,
+// e.g. Pawn.ArsenalMovement.SniperModeEnabled. Roots: Pawn, PC / Controller, Camera / CameraManager (the
+// PlayerCameraManager), ViewTarget; the steps are object properties (TWeakObjectPtr included) or subobjects, as
+// Object= paths (resolve_path). The leaf is read with ue::read_number every frame; a path that can't be resolved
+// reads as "not holding" and is logged once per class of its root (a Blueprint pawn without the property, e.g. the
+// on-foot character of a mech game, is normal and the log says which class lacked what).
+struct Condition {
+    ProfileCondition spec;
+    std::vector<std::string> path;  // spec.path split on '.', root first (aliases mapped to resolve_path's)
+    std::string leaf;
+    bool holds = false;
+    bool resolved_once = false;
+    ue::Obj last_root_class = 0;  // where the last "can't read" was logged
+    double last_value = NAN;
+};
+std::vector<Condition> g_conditions;
+
+void set_profile_conditions(const std::vector<ProfileCondition>& conditions) {
+    g_conditions.clear();
+    for (const ProfileCondition& c : conditions) {
+        Condition cond;
+        cond.spec = c;
+        std::string part;
+        for (const char ch : c.path) {
+            if (ch == '.') {
+                cond.path.push_back(part);
+                part.clear();
+            } else {
+                part += ch;
+            }
+        }
+        cond.path.push_back(part);
+        if (cond.path.size() < 2) {
+            log("profile: condition '%s' (view %u) needs a root and a property, e.g. Pawn.bIsAiming: ignored",
+                c.path.c_str(), c.view_id);
+            continue;
+        }
+        std::string& root = cond.path.front();
+        if (root == "Controller" || root == "PlayerController") root = "PC";
+        else if (root == "CameraManager" || root == "PlayerCameraManager") root = "Camera";
+        if (root != "PC" && root != "Pawn" && root != "Camera" && root != "ViewTarget") {
+            log("profile: condition '%s' (view %u): unknown root '%s' (Pawn, Controller, CameraManager or ViewTarget): ignored",
+                c.path.c_str(), c.view_id, root.c_str());
+            continue;
+        }
+        cond.leaf = cond.path.back();
+        cond.path.pop_back();
+        log("profile: condition for view %u: %s (read every frame)", c.view_id, c.describe().c_str());
+        g_conditions.push_back(std::move(cond));
+    }
+}
+
+uint32_t profile_states(const Scene& s) {
+    uint32_t states = 0;
+    for (Condition& c : g_conditions) {
+        const int bit = sensitivity_view_index(c.spec.view_id);
+        if (bit < 0) continue;
+        const ue::Obj root = c.path.front() == "PC" ? s.pc : c.path.front() == "Pawn" ? s.pawn
+                           : c.path.front() == "Camera" ? s.camera : s.view_target;
+        const ue::Obj o = root ? resolve_path(c.path, s) : 0;
+        double value = 0;
+        const bool readable = o && ue::read_number(o, c.leaf.c_str(), value);
+        const bool holds = readable && c.spec.holds(value);
+        if (readable) {
+            if (!c.resolved_once) {
+                c.resolved_once = true;
+                const ue::Prop p = ue::prop_of(o, c.leaf.c_str());
+                log("profile: condition %s resolved: %s.%s (%s @0x%X) = %g", c.spec.describe().c_str(),
+                    ue::name_of(ue::class_of(o)).c_str(), c.leaf.c_str(), p.type.c_str(), unsigned(p.offset), value);
+            }
+            c.last_root_class = 0;
+        } else if (root) {
+            // Log once per root class: the pawn changed (on foot / in the mech), or the property really is missing.
+            const ue::Obj root_class = ue::class_of(root);
+            if (root_class != c.last_root_class) {
+                c.last_root_class = root_class;
+                log("profile: condition %s can't be read with %s %s (%s): the profile stays off there",
+                    c.spec.describe().c_str(), c.path.front().c_str(), ue::name_of(root_class).c_str(),
+                    !o ? "path not found" : "property missing or not a number");
+            }
+        }
+        if (holds != c.holds) {
+            c.holds = holds;
+            log("profile: condition %s now %s%s", c.spec.describe().c_str(), holds ? "holds" : "doesn't hold",
+                readable ? std::format(" (value {})", value).c_str() : "");
+        }
+        if (holds) states |= 1u << bit;
+    }
+    return states;
+}
+
 void status_details(const Scene& s, const View* view) {
     // Object addresses, for a debugger (e.g. a write breakpoint on ControlRotation); logged when they change.
     static ue::Obj last_pc = 0, last_pawn = 0, last_camera = 0;
@@ -668,6 +760,7 @@ public:
     const char* default_settings() const override { return probe_default_settings(); }
 
     void configure() override { load_profile(); }
+    void set_profile_conditions(const std::vector<ProfileCondition>& conditions) override { unreal::set_profile_conditions(conditions); }
 
     std::vector<ViewInfo> views() const override {
         std::vector<ViewInfo> out;
@@ -710,6 +803,7 @@ public:
         f.view_id = view_id;
         f.base_view_id = base_id;
         f.target = target;
+        f.profile_states = profile_states(s);
         if (g_view) {
             ZoomFov zoom;
             if (ue::camera_fov(s.camera, g_view->zoom_reference_fov, zoom.current_vertical, zoom.reference_vertical))

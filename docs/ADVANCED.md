@@ -117,7 +117,7 @@ Limits:
 | Pacific Drive | UE 4.27 | yes | On foot uses the generic path. In the car the gyro drives the car camera and overrides the auto-recentering while driving. |
 | Returnal | UE 4.25 (modular build) | no | Generic path working OOB. A good setup is gyro on while L2/R2 is held |
 | Cronos: The New Dawn | UE 5.4 | yes | The camera ignores `ControlRotation`; the profile writes the look rotation inside the pawn's `View` component. Panel verified with HDR + RenoDX. |
-| Daemon X Machina | UE 4.20, DX11 | no | Generic path, on foot and in the Arsenal. Its `FChunkedFixedUObjectArray` has `MaxChunks` = 32 for `MaxElements` = 2129920 (truncated, not rounded up as in UE 4.25+): the scanner accepts floor..ceil+1 since 1.9.1. Legacy `GNames` and `UProperty` layout. The game only reads XInput. |
+| Daemon X Machina | UE 4.20, DX11 | no (one shipped for the Sniper tab) | Generic camera path, on foot and in the Arsenal. Its `FChunkedFixedUObjectArray` holds 66560 objects per chunk (65 × 1024, not the usual 64 K): `MaxChunks` = 32 for `MaxElements` = 2129920, which the scanner accepts since 1.9.1 (floor..ceil+1 of `max / 65536`), and the chunk size is measured from chunk 1's first object so index lookups (weak pointers) land on the right object. Legacy `GNames` and `UProperty` layout. The shipped profile switches the Sniper tab (ADS) with `Pawn.ArsenalMovement.SniperModeEnabled`, the game's own scope flag. The game only reads XInput. |
 | Gears of War: E-Day | UE 5.6 (Xbox / Game Pass build) | no | Generic path, campaign tested *WITH EAC DISABLED*. Install in `Binaries\WinGDK` renamed to `version.dll` (with RivaTuner running, the game loads the system `winmm.dll` first). Protected exe: Gyro4All switches to inline hooks and finds the engine objects with a heap scan, so the gyro becomes available a few seconds after the main menu appears. The game ships EasyAntiCheat: don't use Gyro4All in online modes. |
 | Life is Strange Remastered | UE 4 (pre-4.25 property system), DX11 | yes (shipped) | Found with the camera probe. The camera splits pitch and yaw across two raw rotators, and the walking camera blends back to an automatic follow camera unless it gets look input; the profile writes `OnGyro=` to keep it manual. No settings panel (DX11): configure via `gyrolib.ini`. |
 | Luto | UE 5.5.4 | no | Generic path working OOB. Only reads XInput: Gyro4All shows the DualSense / Switch Pro as an Xbox controller (Epic, no Steam Input). |
@@ -164,6 +164,7 @@ All diagnostics go to `Gyro4All\Gyro4All.log` (probe results, if enabled, to `Gy
 | `update rotation: <class> UpdateRotation is vtable[N] at <module>+0x... (reads RotationInput +0x... first): hooked, the gyro goes into RotationInput` | A `Property=RotationInput` view: the gyro is added to the stick's look input inside the controller's `UpdateRotation` (see [The stick's look input](#the-sticks-look-input-propertyrotationinput)). `N functions of its vtable read RotationInput first ... not found` / `not unique`: the controller's `UpdateRotation` couldn't be told apart, so that view doesn't turn (report it with the log). |
 | `scene: the pawn is in a cutscene (IsInActiveCutscene): gyro paused` / `the pawn moves in MOVE_Flying (a scripted scene): gyro paused` / `scripted scene over` | Unreal: scripted moments count as a pause, so the gyro stops as the stick does: a pawn with a reflected `IsInActiveCutscene` set (Dead Island 2), or the pawn's `CharacterMovement` in flying mode (games move the character along a scripted path with it). |
 | `profile: the profile file changed, views read again` | The profile was edited, or the probe added a view: its views apply at once. |
+| `settings: profile 'ADS' (view 1001) mode=Game condition='Pawn....' tab='Sniper'` / `profile: condition for view 1001: ... (read every frame)` | A sensitivity profile switched by the game's state (`<Key>ProfileMode=Game`, see [Sensitivity profiles driven by the game](#sensitivity-profiles-driven-by-the-game-keyprofilemodegame)). `profile: condition ... resolved: <class>.<property> (<type> @0x...) = <value>` is the first read; `... now holds (value N)` / `... now doesn't hold (value N)` each change; `... can't be read from <class>` (once per class): this pawn / controller / camera has no such path, the profile stays off there. |
 | The gyro stops mid-game, `gyro on` still logged | Look at the lines just before: `focus: lost to <program> (window class ...)` (another window is in front), `gyro: GyroLib suspends the gyro` (activation mode, focus, pause, menus or calibration), `gyro: motion data lost`, `gyro: GyroLib's sample count restarted` (the controller was reopened) or `gyro: the controller reads as lying still` while you hold it (no real gyro data). If `applied yaw` keeps changing, `camera: stopped following the gyro (...) - target ..., camera manager ..., CameraStyle ...` names the camera that took over. |
 | Camera drifts slowly | Rest the pad in a menu for a few seconds (`bias=` in the status line should become non-zero) or use "Recalibrate gyro". |
 | Panel doesn't open | Look for `overlay:` lines (DX11/DX10/DX9 games: also `panel:` lines, e.g. `panel: captured D3D11 swapchain ...`, `panel: D3D11 renderer ready ...`, `panel: no frame presented for N ms: panel closed`). Try from the game's pause menu. As a fallback, edit `gyrolib.ini` directly. |
@@ -439,6 +440,37 @@ unless `ZoomReferenceFOV=` says otherwise (horizontal degrees, like the engine r
 a view section (`[View.*]`) for Unreal, `[Unreal3]` for Unreal Engine 3, then the generic `[Gyro4All] ZoomReferenceFOV=`
 in the profile or Gyro4All.ini — so one value can serve every game of the folder. `0` (or no value) uses the engine's
 own default.
+
+### Sensitivity profiles driven by the game (`<Key>ProfileMode=Game`)
+
+A sensitivity profile (ADS, ALT_ADS, OTHER: the extra tabs of the panel, see the README) normally follows a button.
+With `Mode=Game` it follows a property the engine reads each frame instead, so it can't get out of step with the game
+the way `Toggle` can: it is on while the condition holds and off otherwise (and off outside gameplay, like the other
+modes). Set it in `Gyro4All.ini` or, usually, in the game's profile; it applies from the next start:
+
+```ini
+[Gyro4All]
+AdsProfileMode=Game
+AdsProfileCondition=Pawn.ArsenalMovement.SniperModeEnabled
+AdsProfileLabel=Sniper
+```
+
+`<Key>ProfileCondition=` is a property path, optionally compared: the path alone means true / non-zero;
+`<path> == 2`, `!=`, `<`, `<=`, `>`, `>=` compare it with a number, `true` or `false`. In Unreal games the path has the
+roots of `Object=`: `Pawn`, `Controller` (or `PC`), `CameraManager` (or `Camera`), `ViewTarget`; each next segment is
+an object property of the previous object (plain or weak pointer), and the last one a Bool, Byte / Enum, Int, Float or
+Double property (an object property counts as 1 when set, 0 when null). Letters, digits, `_` and `.` only: no `@Class`.
+
+The log tells what happens: `profile: condition Pawn.ArsenalMovement.SniperModeEnabled resolved:
+ArsenalMovement_C.SniperModeEnabled (BoolProperty @0xF8) = 0` on the first read, `... now holds (value 1)` / `... now
+doesn't hold (value 0)` on each change, and `... can't be read from <class>` once per root class whose objects don't
+have the path (another pawn, e.g. on foot in a game with vehicles): the profile stays off there.
+
+To find the property: look for a reflected property that flips with the state you want. `Dump=1` in a view section
+lists the view object's properties once and `Watch=Name` logs a property's changes (see "Game profiles" above); for a
+property of a component, a UE SDK dump of the game or its `.pdb`, when it ships one, gives the names. Daemon X Machina's
+scope flag lives in the Arsenal pawn's `ArsenalMovement` component (`UTTLArsenalMovementComponent::SniperModeEnabled`)
+and flips exactly with the scope, which an `LS` toggle can't tell from the stick click of other weapons.
 
 ### The stick's look input (`Property=RotationInput`)
 

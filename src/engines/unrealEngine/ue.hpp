@@ -43,8 +43,11 @@ Obj find_subobject_of_class(Obj outer, const char* class_name);
 // Properties (class chain lookup, cached per class)
 Prop find_prop(Obj cls_or_struct, const char* name);
 Prop prop_of(Obj o, const char* name);       // lookup on o's class
-Obj read_obj(Obj o, const char* name);       // object property value (0 if missing)
+Obj read_obj(Obj o, const char* name);       // object property value (0 if missing); TWeakObjectPtr properties resolved
 bool read_bool(Obj o, const char* name, bool fallback);
+// A scalar property as a number: Float, Double, Int (8..64), Byte, Enum, Bool (0/1), object pointers (0 = null, 1 =
+// set). False if missing or of another type.
+bool read_number(Obj o, const char* name, double& out);
 Obj struct_type(const Prop& p);              // UScriptStruct* of a StructProperty
 
 // Rotators are float (UE4) or double (UE5 large world coordinates); element_size tells which.
