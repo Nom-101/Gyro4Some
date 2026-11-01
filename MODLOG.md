@@ -6395,3 +6395,15 @@ or gyro to stick.
   ArsenalMovement_C.SniperModeEnabled (BoolProperty @0xF8) = 0`, then `now holds` / `now doesn't hold` in step with the
   scope; the user confirms the Sniper sensitivity applies only while scoped. Tests: parser (bare path, every operator,
   true/false, 14 bad inputs). Docs: README profile table, ADVANCED section + log lines, GAMES / compatibility rows.
+- 2026-11-01 **Daemon X Machina: no gyro while the Arsenal flies → `PauseWhenFlying=`** (built, 758 checks pass;
+  user-tested): the log showed `scene: the pawn moves in MOVE_Flying (a scripted scene): gyro paused` / `gyro off:
+  game paused (target ArsenalCharacter_C)` at every take-off and `scripted scene over` / `gyro on` at every landing
+  (10 pairs in one session). The Arsenal hovers, boosts and glides with `CharacterMovement.MovementMode` = 5, the
+  signal `read_scene` has used since 2026-10-25 for Dead Island 2's scripted scenes, whose entry already named the
+  risk ("a game whose normal play flies the character ... would lose the gyro there"). Kept as the default (DI2
+  depends on it, and the better signal tried then, `IsLookInputIgnored`, never fired there) with a per-game opt-out
+  instead of a guessed rule: `[Gyro4All] PauseWhenFlying=0` (`settings::get`: the profile wins over Gyro4All.ini,
+  like `StickFallback=`), read in `load_profile()` into `g_pause_when_flying`; `read_scene` then skips the
+  `CharacterMovement` read, `IsInActiveCutscene` unchanged. Logged once at start when off. The commented key is
+  appended to the Unreal block of a new Gyro4All.ini from `default_settings()` (`kSceneSettings`, next to the code
+  that reads it, not in the probe's block). DXM's shipped profile sets it; the game has no cutscene flag this masks.
