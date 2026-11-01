@@ -108,11 +108,12 @@ void GL_CALL on_recenter_step(void*, double fraction) {
 // Gyro4All.ini; until then its tab is labelled "<label> - disabled" and says how to enable it.
 struct Profile {
     uint32_t id = 0;
-    const char* key;  // Gyro4All.ini prefix: <key>ProfileButton, <key>ProfileMode
+    const char* key;  // Gyro4All.ini prefix: <key>ProfileButton, <key>ProfileMode, <key>ProfileLabel
     const char* label;
     uint32_t parent;  // settings inheritance (ALT_ADS from ADS)
     int button = -1;  // SDL_GamepadButton, or kLeftTrigger / kRightTrigger; -1 = disabled
     std::string button_name;
+    std::string display;      // tab name: <key>ProfileLabel= (e.g. "Sniper"), else label
     bool registered = false;  // has its tab in the panel
     bool toggle = false;
     bool down = false, on = false;
@@ -162,11 +163,13 @@ void load_sensitivity_profiles() {
         p.button = mode_ok ? parse_button(button) : -1;
         p.button_name = button;
         p.toggle = mode == "toggle";
+        p.display = settings::get_string((key + L"ProfileLabel").c_str());
+        if (p.display.empty()) p.display = p.label;
         if (!button.empty() && parse_button(button) < 0)
             log("settings: %sProfileButton=%s not recognised", p.key, button.c_str());
         if (!mode.empty() && !mode_ok) log("settings: %sProfileMode=%s not recognised (Hold or Toggle)", p.key, mode.c_str());
         if (p.button < 0) log("settings: profile '%s' (view %u) disabled: needs %sProfileButton= and %sProfileMode=", p.label, p.id, p.key, p.key);
-        else log("settings: profile '%s' (view %u) button=%s mode=%s", p.label, p.id, button.c_str(), p.toggle ? "Toggle" : "Hold");
+        else log("settings: profile '%s' (view %u) button=%s mode=%s tab='%s'", p.label, p.id, button.c_str(), p.toggle ? "Toggle" : "Hold", p.display.c_str());
     }
 }
 
@@ -178,7 +181,7 @@ void register_sensitivity_profiles(gl_context* ctx, const std::vector<ViewInfo>&
             p.button = -1;
             continue;
         }
-        const std::string label = p.button < 0 ? std::string(p.label) + " - disabled" : p.label;
+        const std::string label = p.button < 0 ? std::string(p.label) + " - disabled" : p.display;
         const std::string description =
             p.button < 0 ? std::format("Disabled. To use it, set {0}ProfileButton= (e.g. LT) and {0}ProfileMode= (Hold or "
                                        "Toggle) in Gyro4All\\Gyro4All.ini, then restart the game.", p.key)

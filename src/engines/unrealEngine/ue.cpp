@@ -189,6 +189,14 @@ int item_stride(uintptr_t items, int* object_out) {
     return -1;
 }
 
+// MaxChunks for a MaxElements: engines differ in how PreAllocate derives it. UE 4.25+ rounds MaxElements up to whole
+// chunks (MaxChunks == ceil); UE 4.20 (Daemon X Machina: MaxElements 2129920 = 32.5 chunks, MaxChunks 32) truncates;
+// other builds use InMaxElements / chunk + 1 without rounding MaxElements. Accept floor .. ceil + 1.
+bool max_chunks_plausible(int32_t max, int32_t max_chunks) {
+    const int32_t floor_chunks = max / 65536, ceil_chunks = (max + 65535) / 65536;
+    return max_chunks >= floor_chunks && max_chunks <= ceil_chunks + 1;
+}
+
 // FChunkedFixedUObjectArray at a: Objects**, PreAllocatedObjects*, MaxElements, NumElements, MaxChunks,
 // NumChunks, with valid items in chunk 0. Returns the item stride, 0 if the header doesn't match, -1 if the header
 // matches but the items don't.
@@ -196,7 +204,7 @@ int object_array_stride(uintptr_t a, uintptr_t* chunk0_out = nullptr, int* objec
     int32_t max = 0, num = 0, max_chunks = 0, num_chunks = 0;
     if (!rd(a + 0x10, max) || !rd(a + 0x14, num) || !rd(a + 0x18, max_chunks) || !rd(a + 0x1C, num_chunks)) return 0;
     if (num <= 1000 || num > max || max < 0x10000 || max > 0x10000000) return 0;
-    if (max_chunks != (max + 65535) / 65536) return 0;
+    if (!max_chunks_plausible(max, max_chunks)) return 0;
     if (num_chunks < (num + 65535) / 65536 || num_chunks > max_chunks) return 0;
     const uintptr_t chunks = rdp(a);
     const uintptr_t chunk0 = chunks ? rdp(chunks) : 0;
@@ -376,7 +384,7 @@ uintptr_t scan_heap_region(uintptr_t begin, uintptr_t end) {
             const auto* q = reinterpret_cast<const int32_t*>(a + 0x10);  // Max, Num, MaxChunks, NumChunks
             const int32_t max = q[0], num = q[1], max_chunks = q[2], num_chunks = q[3];
             if (num_chunks <= 0 || num_chunks > max_chunks || max_chunks > 4096) continue;
-            if (max < 0x10000 || max_chunks != (max + 65535) / 65536 || num <= 1000 || num > max) continue;
+            if (max < 0x10000 || !max_chunks_plausible(max, max_chunks) || num <= 1000 || num > max) continue;
             if (object_array_stride(a) > 0) return a;
         }
     } __except (guard_filter(GetExceptionInformation())) {

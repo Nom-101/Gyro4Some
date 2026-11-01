@@ -82,12 +82,16 @@ const char kCoreSettings[] =
     ";     Buttons: LT RT LB RB LS RS A B X Y (or L2 R2 L1 R1 L3 R3 Cross Circle Square Triangle),\r\n"
     ";     Back Start Up Down Left Right Touchpad Misc LP1 LP2 RP1 RP2 (paddles). Restart the game after a change.\r\n"
     ";     Example: AdsProfileButton=LT and AdsProfileMode=Hold.\r\n"
+    ";     <Name>ProfileLabel= renames the tab in the panel (e.g. Sniper, Scope); empty = ADS / ALT_ADS / OTHER.\r\n"
     "AdsProfileButton=\r\n"
     "AdsProfileMode=\r\n"
+    "AdsProfileLabel=\r\n"
     "AltAdsProfileButton=\r\n"
     "AltAdsProfileMode=\r\n"
+    "AltAdsProfileLabel=\r\n"
     "OtherProfileButton=\r\n"
-    "OtherProfileMode=\r\n";
+    "OtherProfileMode=\r\n"
+    "OtherProfileLabel=\r\n";
 
 }  // namespace
 

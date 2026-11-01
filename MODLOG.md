@@ -6348,3 +6348,20 @@ or gyro to stick.
   stay: different views can have different unzoomed FOVs, which one folder-wide value can't express); `Unreal3`'s
   `configure()` falls back to `settings::get_string("ZoomReferenceFOV")` (profile wins over Gyro4All.ini, as other mod
   settings). `docs/ADVANCED.md`: the Zoom compensation section documents the precedence.
+- 2026-11-01 **Daemon X Machina (UE 4.20): GUObjectArray rejected by the MaxChunks check** (built, 709 checks pass;
+  user-tested on the Steam version, DualSense USB): the game ships its `.pdb`, which put `GUObjectArray` at `.data`
+  rva 0x442E1F0, inside the scanned sections, with every header field as expected except `MaxChunks`: 32 for
+  `MaxElements` 2129920 (= 32.5 chunks). UE 4.20's `PreAllocate` truncates where 4.25+ rounds `MaxElements` up to whole
+  chunks, so `max_chunks != ceil(max / 65536)` rejected the real array for 60 s (`GUObjectArray not found yet`, the
+  XOR and heap scans found nothing either: the heap prefilter had the same test). `max_chunks_plausible()` now accepts
+  floor..ceil+1 in both the section scan and the heap prefilter. With it: chunked array (stride 0x18), legacy
+  `TNameEntryArray` GNames, `UProperty` layout (SuperStruct 0x30, Children 0x38, Next 0x28, Name 0x18), engine
+  `TTLGameEngine`; `camera: confirmed` on foot (`OuterCharacter_C`, `TTLPlayerCameraManager`) and the user confirms the
+  Arsenal camera (`ArsenalCharacter_C`, same `Exploration` view) follows too. No profile. DX11 panel works. Tools used:
+  dbghelp-based PDB symbol/type dumps and a read-only `ReadProcessMemory` probe of the live header.
+- 2026-11-01 **`<Name>ProfileLabel=`: rename a sensitivity profile's tab** (built, 709 checks pass; for Daemon X
+  Machina's sniper view, `AdsProfileButton=LS AdsProfileMode=Toggle AdsProfileLabel=Sniper`): `Profile.display` from
+  `AdsProfileLabel=` / `AltAdsProfileLabel=` / `OtherProfileLabel=` (Gyro4All.ini or the game's profile) replaces the
+  fixed ADS / ALT_ADS / OTHER tab name once the profile is enabled; the disabled tab keeps `<label> - disabled` so the
+  hint still names the INI keys. The INI template and README document the key. Logs are unchanged except the
+  `tab='...'` suffix on the enabled line.

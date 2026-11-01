@@ -125,6 +125,7 @@ changed.
   | `AdsProfileMode=` | `Hold`: active while the button is held. `Toggle`: one press on, the next off; it also turns off on pause, menus and cutscenes, since Gyro4All can't see whether the game is still aiming. Empty = disabled. |
   | `AltAdsProfileButton=`, `AltAdsProfileMode=` | Same for the ALT_ADS profile. |
   | `OtherProfileButton=`, `OtherProfileMode=` | Same for the OTHER profile. |
+  | `AdsProfileLabel=`, `AltAdsProfileLabel=`, `OtherProfileLabel=` | Optional name for the tab in the panel (e.g. `Sniper`). Empty = ADS / ALT_ADS / OTHER. |
 
   Example: `AdsProfileButton=LT` and `AdsProfileMode=Hold`.
 
